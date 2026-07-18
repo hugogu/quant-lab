@@ -1,0 +1,74 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: quantlab-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5433:5432"          # avoid host port 5432 (postgresql conflict)
+    volumes:
+      - ./sql:/docker-entrypoint-initdb.d:ro
+      - timescaledb-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  redis:
+    image: redis:7-alpine
+    container_name: quantlab-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"          # avoid host 6379
+    command: redis-server --maxmemory 192mb --maxmemory-policy allkeys-lru
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: quantlab-api
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports:
+      - "8000:8000"
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    container_name: quantlab-web
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "8501:8501"
+
+  worker:
+    build:
+      context: .
+      dockerfile: collector/Dockerfile
+    container_name: quantlab-worker
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    command: python -m collector.scheduler
+
+volumes:
+  timescaledb-data:

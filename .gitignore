@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+*.egg-info/
+
+# Data outputs
+data/
+.parquet/
+*.parquet
+*.csv
+logs/
+
+# Docker
+.docker-data/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
