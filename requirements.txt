@@ -8,6 +8,7 @@ pydantic>=2.5
 # Collector (data sources)
 akshare>=1.12
 tushare>=1.4
+baostock>=0.8.8
 pandas>=2.1
 polars>=0.20
 
@@ -22,3 +23,7 @@ plotly>=5.18
 redis>=5.0
 python-dotenv>=1.0
 structlog>=24.1
+
+# Testing
+pytest>=8.0
+pytest-asyncio>=0.23
