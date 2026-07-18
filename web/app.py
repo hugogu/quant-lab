@@ -67,7 +67,7 @@ if view == "K-line / 净值":
             st.info("no data — seed fund codes via SQL then hit POST /collect/fund")
 
 # ===================== Main: Features =====================
-else:
+elif view == "Factors":
     st.subheader(f"Factors — {target}")
     try:
         meta = requests.get(f"{API_BASE}/features/list", timeout=5).json()
