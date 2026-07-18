@@ -63,21 +63,25 @@ def _get_fetcher(source: str, db_row: dict) -> Fetcher:
     retries = int(config.get("max_retries", 3))
     threshold = int(config.get("failure_threshold", 5))
     cooldown = float(config.get("cooldown_seconds", 300))
+    # Per-fetch hard timeout (seconds). The sync call runs in a subprocess;
+    # on expiry the parent SIGKILLs the child. Bounds CPU usage when an
+    # upstream library misbehaves (e.g. baostock busy-looping on CLOSE_WAIT).
+    request_timeout = float(config.get("request_timeout_seconds", 60.0))
 
     fetcher: Fetcher
     if source == "akshare_astock":
         from .akshare import AKShareAStockFetcher
-        fetcher = AKShareAStockFetcher(rate, retries, threshold, cooldown)
+        fetcher = AKShareAStockFetcher(rate, retries, threshold, cooldown, request_timeout)
     elif source == "akshare_fund":
         from .akshare import AKShareFundFetcher
-        fetcher = AKShareFundFetcher(rate, retries, threshold, cooldown)
+        fetcher = AKShareFundFetcher(rate, retries, threshold, cooldown, request_timeout)
     elif source == "baostock_astock":
         from .baostock import BaoStockAStockFetcher
-        fetcher = BaoStockAStockFetcher(rate, retries, threshold, cooldown)
+        fetcher = BaoStockAStockFetcher(rate, retries, threshold, cooldown, request_timeout)
     elif source == "tushare_astock":
         from .tushare import TushareAStockFetcher
         try:
-            fetcher = TushareAStockFetcher(rate, retries, threshold, cooldown)
+            fetcher = TushareAStockFetcher(rate, retries, threshold, cooldown, request_timeout)
         except SourceMisconfigured as e:
             log.info("tushare_astock skipped: %s", e)
             raise

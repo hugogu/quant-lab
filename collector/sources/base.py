@@ -134,6 +134,9 @@ class Fetcher(ABC):
     - rate_limit_per_sec (token-bucket)
     - max_retries (per-call retry with exponential backoff)
     - failure_threshold (circuit breaker trip point)
+    - request_timeout (hard wall-clock seconds per fetch; the subprocess
+      is SIGKILLed on expiry. Only meaningful because sync fetches now
+      run in subprocesses — see subprocess_runner.py.)
 
     Subclasses implement:
     - fetch_raw(symbol, start, end) -> opaque payload (the bytes the upstream returned)
@@ -146,13 +149,15 @@ class Fetcher(ABC):
     source: str = ""  # must match data_source.source
 
     def __init__(self, rate_limit_per_sec: float = 2.0, max_retries: int = 3,
-                 failure_threshold: int = 5, cooldown_seconds: float = 300.0):
+                 failure_threshold: int = 5, cooldown_seconds: float = 300.0,
+                 request_timeout: float = 60.0):
         self.rate_limiter = RateLimiter(rate_limit_per_sec)
         self.breaker = CircuitBreaker(
             failure_threshold=failure_threshold,
             cooldown_seconds=cooldown_seconds,
         )
         self.max_retries = max_retries
+        self.request_timeout = float(request_timeout)
 
     @abstractmethod
     async def fetch_raw(self, symbol: str, start: date, end: date) -> dict[str, Any]:

@@ -1,7 +1,14 @@
-"""Tushare fetcher — token-gated, higher rate limit, requires TUSHARE_TOKEN env.
+"""Tushare fetcher — token-gated, subprocess-isolated.
 
-Tushare Pro has a points-based system; daily() / pro_bar() needs enough points
-for the user. Falls back from akshare when token is set and primary fails.
+Token check still happens in-parent (raises ``SourceMisconfigured`` if
+``TUSHARE_TOKEN`` is unset, so the registry skips this source cleanly
+rather than spinning up a subprocess that will just fail). The token is
+passed to the child via env (not argv) to avoid leaking it via
+``/proc/<pid>/cmdline``.
+
+Tushare Pro has a points-based system; daily() / pro_bar() needs enough
+points for the user. Falls back from akshare when token is set and primary
+fails.
 
 Reference: https://tushare.pro/document/2
 """
@@ -14,8 +21,28 @@ from datetime import date
 from typing import Any
 
 from .base import Fetcher, SourceMisconfigured, SourceUnavailable
+from .subprocess_runner import run_sync_in_subprocess
 
 log = logging.getLogger(__name__)
+
+
+def _astock_sync(ts_code: str, start_date: str, end_date: str) -> list[dict]:
+    """Sync tushare call. Reads TUSHARE_TOKEN from env (passed by parent).
+    Returns list of dicts (tushare's native column names: vol/amount/etc.)."""
+    import tushare as ts
+    token = os.getenv("TUSHARE_TOKEN")
+    if not token:
+        raise RuntimeError("TUSHARE_TOKEN not set in subprocess env")
+    ts.set_token(token)
+    pro = ts.pro_api()
+    df = pro.daily(
+        ts_code=ts_code,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if df is None or df.empty:
+        return []
+    return df.to_dict(orient="records")
 
 
 class TushareAStockFetcher(Fetcher):
@@ -28,27 +55,19 @@ class TushareAStockFetcher(Fetcher):
             raise SourceMisconfigured(
                 "TUSHARE_TOKEN env not set; tushare source will be skipped at runtime"
             )
-        # Lazy import — only if token present
-        import tushare as ts
-        ts.set_token(token)
-        self._pro = ts.pro_api()
+        # No pro_api() in parent anymore — happens in subprocess.
 
     async def fetch_raw(self, symbol: str, start: date, end: date) -> dict[str, Any]:
-        # Tushare expects YYYYMMDD strings; exchange suffix required for pro_bar
         ts_code = _to_ts_code(symbol)
-
-        def _sync() -> list[dict]:
-            df = self._pro.daily(
-                ts_code=ts_code,
-                start_date=start.strftime("%Y%m%d"),
-                end_date=end.strftime("%Y%m%d"),
-            )
-            if df is None or df.empty:
-                return []
-            return df.to_dict(orient="records")
-
         try:
-            records = await asyncio.to_thread(_sync)
+            records = await run_sync_in_subprocess(
+                "collector.sources.tushare", "_astock_sync",
+                [ts_code, start.strftime("%Y%m%d"), end.strftime("%Y%m%d")],
+                timeout=self.request_timeout,
+                env_extra={"TUSHARE_TOKEN": os.environ["TUSHARE_TOKEN"]},
+            )
+        except SourceUnavailable:
+            raise
         except Exception as e:
             raise SourceUnavailable(f"tushare fetch failed for {symbol}: {e}") from e
 

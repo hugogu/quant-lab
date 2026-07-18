@@ -1,19 +1,28 @@
-"""BaoStock fetcher — stable fallback for A-share OHLCV.
+"""BaoStock fetcher — subprocess-isolated; demoted to last-resort.
 
-BaoStock uses its own protocol (not HTTP REST) so it works through
-some GFW paths that block eastmoney. Slower than akshare (1 req/sec
-recommended) but more reliable when akshare's upstream is throttled.
+BaoStock uses its own TCP protocol (port 10030) instead of HTTP REST. Under
+GFW, the long-lived TCP session gets silently dropped and the remote ends
+up in CLOSE_WAIT. The baostock library's ``send_msg`` then busy-loops
+writing to the half-closed socket without backoff — pegging one core
+indefinitely. This was the root cause of the worker CPU spin bug.
+
+Running the sync call in a subprocess lets the parent SIGKILL the spinning
+child on timeout, ending the spin reliably (threads can't be killed;
+subprocesses can).
+
+BaoStock is also demoted to priority 99 in ``sql/006`` so it's only tried
+after akshare + tushare both fail. Under GFW it's unreliable as a primary.
 
 Reference: http://baostock.com/baostock/index.php/A%E8%82%A1K%E7%BA%BF%E6%95%B0%E6%8D%AE
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import date
 from typing import Any
 
 from .base import Fetcher, SourceUnavailable
+from .subprocess_runner import run_sync_in_subprocess
 
 log = logging.getLogger(__name__)
 
@@ -36,35 +45,47 @@ def _to_bs_code(symbol: str) -> str:
     raise ValueError(f"cannot infer exchange for symbol {symbol!r}")
 
 
+def _astock_sync(bs_code: str, start_date: str, end_date: str) -> list[list[str]]:
+    """Sync baostock call. Runs in a child process so a stuck TCP session
+    can be SIGKILLed by the parent. Returns list of row tuples
+    (date, open, high, low, close, volume, amount) — same shape baostock's
+    ``get_row_data()`` returns. Parse happens in-parent."""
+    import baostock as bs
+    lg = bs.login()
+    if lg.error_code != "0":
+        raise RuntimeError(f"baostock login failed: {lg.error_msg}")
+    try:
+        rs = bs.query_history_k_data_plus(
+            bs_code,
+            "date,open,high,low,close,volume,amount",
+            start_date=start_date,
+            end_date=end_date,
+            frequency="d",
+            adjustflag="2",  # 1=不复权, 2=前复权, 3=后复权
+        )
+        rows = []
+        while (rs.error_code == "0") and rs.next():
+            rows.append(rs.get_row_data())
+        if rs.error_code != "0":
+            raise RuntimeError(f"baostock query error: {rs.error_msg}")
+        return rows
+    finally:
+        bs.logout()
+
+
 class BaoStockAStockFetcher(Fetcher):
     source = "baostock_astock"
 
     async def fetch_raw(self, symbol: str, start: date, end: date) -> dict[str, Any]:
         bs_code = _to_bs_code(symbol)
-
-        def _sync() -> list[dict]:
-            import baostock as bs
-            lg = bs.login()
-            if lg.error_code != "0":
-                raise SourceUnavailable(f"baostock login failed: {lg.error_msg}")
-            try:
-                rs = bs.query_history_k_data_plus(
-                    bs_code,
-                    "date,open,high,low,close,volume,amount",
-                    start_date=start.strftime("%Y-%m-%d"),
-                    end_date=end.strftime("%Y-%m-%d"),
-                    frequency="d",
-                    adjustflag="2",  # 1=不复权, 2=前复权, 3=后复权
-                )
-                rows = []
-                while (rs.error_code == "0") and rs.next():
-                    rows.append(rs.get_row_data())
-                return rows
-            finally:
-                bs.logout()
-
         try:
-            records = await asyncio.to_thread(_sync)
+            records = await run_sync_in_subprocess(
+                "collector.sources.baostock", "_astock_sync",
+                [bs_code, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")],
+                timeout=self.request_timeout,
+            )
+        except SourceUnavailable:
+            raise
         except Exception as e:
             raise SourceUnavailable(f"baostock fetch failed for {symbol}: {e}") from e
 

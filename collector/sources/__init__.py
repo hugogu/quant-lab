@@ -5,11 +5,13 @@ failover + watermark-based incremental fetch without caring which
 upstream library is used.
 
 Layers:
-  base.py        — Fetcher ABC + exceptions + retry/rate-limit/circuit-breaker
-  akshare.py     — AKShareAStockFetcher, AKShareFundFetcher (refactor of legacy)
-  baostock.py    — BaoStockAStockFetcher
-  tushare.py     — TushareAStockFetcher (token-gated)
-  registry.py    — failover chain + watermark + raw_payload persistence
+  base.py             — Fetcher ABC + exceptions + retry/rate-limit/circuit-breaker
+  subprocess_runner.py — run sync calls in a SIGKILLable subprocess (CPU-spin guard)
+  _runner.py          — standalone entrypoint invoked by subprocess_runner
+  akshare.py          — AKShareAStockFetcher, AKShareFundFetcher
+  baostock.py         — BaoStockAStockFetcher (demoted to last-resort)
+  tushare.py          — TushareAStockFetcher (token-gated)
+  registry.py         — failover chain + watermark + raw_payload persistence
 """
 from .base import (
     Fetcher,
@@ -20,6 +22,7 @@ from .base import (
     CircuitBreaker,
     with_retry,
 )
+from .subprocess_runner import run_sync_in_subprocess
 from .registry import (
     fetch_with_failover,
     save_raw_payload,
@@ -38,6 +41,7 @@ __all__ = [
     "RateLimiter",
     "CircuitBreaker",
     "with_retry",
+    "run_sync_in_subprocess",
     "fetch_with_failover",
     "save_raw_payload",
     "mark_raw_parsed",

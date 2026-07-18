@@ -25,6 +25,13 @@ log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
 
 
+# Hard wall-clock cap for a single symbol's full failover chain. Independent
+# of (and longer than) the per-source subprocess timeout: it bounds the
+# whole "try akshare → tushare → baostock" sequence so one symbol can't
+# stall the batch. Tune via env.
+PER_SYMBOL_TIMEOUT_SECONDS = float(os.getenv("PER_SYMBOL_TIMEOUT_SECONDS", "180"))
+
+
 # ============================================================
 # job_run helpers
 # ============================================================
@@ -61,10 +68,17 @@ async def list_active_symbols(market: str = "astock") -> list[str]:
 # ============================================================
 
 async def collect_symbol_one(symbol: str, lookback_days: int = 7):
-    """Fetch one symbol via failover chain. Returns (source_used, rows)."""
+    """Fetch one symbol via failover chain. Returns (source_used, rows).
+
+    Bounded by PER_SYMBOL_TIMEOUT_SECONDS so a single misbehaving source
+    can't block the whole batch (defense in depth on top of the per-source
+    subprocess timeout)."""
     end = datetime.now(timezone.utc).date()
     start = end - timedelta(days=lookback_days)
-    result = await fetch_with_failover(domain="astock", symbol=symbol, start=start, end=end)
+    result = await asyncio.wait_for(
+        fetch_with_failover(domain="astock", symbol=symbol, start=start, end=end),
+        timeout=PER_SYMBOL_TIMEOUT_SECONDS,
+    )
     return result.source, result.rows
 
 
@@ -86,6 +100,10 @@ async def run_astock_job():
                     rows_upserted += len(rows)
             except SourceUnavailable as e:
                 fail_reason = f"{sym}: {e}"
+                log.error("astock_daily: %s — skipping", fail_reason)
+                continue
+            except asyncio.TimeoutError:
+                fail_reason = f"{sym}: exceeded {PER_SYMBOL_TIMEOUT_SECONDS:.0f}s wall-clock"
                 log.error("astock_daily: %s — skipping", fail_reason)
                 continue
 
@@ -112,10 +130,15 @@ async def run_astock_job():
 # ============================================================
 
 async def collect_fund_one(fund_code: str, lookback_days: int = 3):
-    """Fetch one fund via failover chain. Returns (source_used, rows)."""
+    """Fetch one fund via failover chain. Returns (source_used, rows).
+
+    Bounded by PER_SYMBOL_TIMEOUT_SECONDS (same rationale as collect_symbol_one)."""
     end = datetime.now(timezone.utc).date()
     start = end - timedelta(days=lookback_days)
-    result = await fetch_with_failover(domain="fund", symbol=fund_code, start=start, end=end)
+    result = await asyncio.wait_for(
+        fetch_with_failover(domain="fund", symbol=fund_code, start=start, end=end),
+        timeout=PER_SYMBOL_TIMEOUT_SECONDS,
+    )
     return result.source, result.rows
 
 
@@ -161,6 +184,10 @@ async def run_fund_job():
                     rows_upserted += len(rows)
             except SourceUnavailable as e:
                 fail_reason = f"{f}: {e}"
+                log.error("fund_nav_daily: %s — skipping", fail_reason)
+                continue
+            except asyncio.TimeoutError:
+                fail_reason = f"{f}: exceeded {PER_SYMBOL_TIMEOUT_SECONDS:.0f}s wall-clock"
                 log.error("fund_nav_daily: %s — skipping", fail_reason)
                 continue
 
