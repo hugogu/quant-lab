@@ -88,7 +88,7 @@ async def run_fund_job():
         log.exception("fund_nav_daily failed: %s", e)
 
 
-def main():
+async def main_async():
     sched = AsyncIOScheduler(timezone="Asia/Shanghai")
 
     # A股: 工作日 17:00 (after market close, before 22:00 fund run)
@@ -102,7 +102,13 @@ def main():
 
     log.info("scheduler starting")
     sched.start()
-    asyncio.get_event_loop().run_forever()
+    # Keep event loop alive — APScheduler 3.x needs a running loop
+    while True:
+        await asyncio.sleep(3600)
+
+
+def main():
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":
