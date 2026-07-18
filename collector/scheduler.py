@@ -19,7 +19,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from .db import acquire, upsert_ohlcv
 from .sources import fetch_with_failover, SourceUnavailable
-from . import factor_runner
+from . import factor_runner, signal_runner
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
@@ -198,6 +198,12 @@ async def main_async():
         lambda: factor_runner.run_all_symbols(lookback_days=int(os.getenv("FACTOR_LOOKBACK_DAYS", "252"))),
         CronTrigger.from_crontab(os.getenv("FACTOR_CRON", "30 17 * * 1-5")),
         id="factor_runner",
+    )
+    # 信号: 工作日 17:45 (after features are in)
+    sched.add_job(
+        lambda: signal_runner.run(lookback_days=int(os.getenv("FACTOR_LOOKBACK_DAYS", "252"))),
+        CronTrigger.from_crontab(os.getenv("SIGNAL_CRON", "45 17 * * 1-5")),
+        id="signal_runner",
     )
 
     # Run once on startup to populate initial data

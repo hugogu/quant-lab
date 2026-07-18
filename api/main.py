@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routes import healthz, symbols, ohlcv, collect, features
+from .routes import healthz, symbols, ohlcv, collect, features, paper_trade, signals
 # Importing factors.builtin registers all factors with the registry at boot.
 import factors  # noqa: F401
 
@@ -28,6 +28,8 @@ app.include_router(symbols.router)
 app.include_router(ohlcv.router)
 app.include_router(collect.router)
 app.include_router(features.router)
+app.include_router(paper_trade.router)
+app.include_router(signals.router)
 
 
 @app.get("/")
@@ -40,5 +42,8 @@ async def root():
             "/ohlcv/{symbol}", "/fund/{code}",
             "/collect/astock", "/collect/fund",
             "/features/list", "/features/latest", "/features/{symbol}", "/features/{symbol}/{feature_name}",
+            "/paper_trade/positions", "/paper_trade/history", "/paper_trade/summary",
+            "/paper_trade/buy", "/paper_trade/sell",
+            "/signals/latest", "/signals/{symbol}",
         ],
     }

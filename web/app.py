@@ -27,7 +27,7 @@ with st.sidebar:
     else:
         target = st.text_input("fund code", "000001")
     lookback = st.slider("lookback days", 30, 1000, 250)
-    view = st.radio("view", ["K-line / 净值", "Factors"])
+    view = st.radio("view", ["K-line / 净值", "Factors", "Signals", "Paper Trades"])
 
 # ===================== Main: K-line / NAV =====================
 if view == "K-line / 净值":
@@ -119,3 +119,120 @@ else:
                 st.dataframe(df_wide, use_container_width=True)
             else:
                 st.info("no cross-section data yet")
+
+# ===================== Main: Signals =====================
+elif view == "Signals":
+    st.subheader("Signals — latest composite scores")
+    st.caption("Source: signal_runner cron (17:45 weekdays). Until features land, this view shows the raw feature snapshot.")
+    try:
+        latest = requests.get(f"{API_BASE}/signals/latest", timeout=10).json()
+    except Exception as e:
+        st.error(f"failed: {e}")
+        latest = []
+    if latest:
+        df = pd.DataFrame(latest)
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("no signal rows yet — need feature_value data (currently 0 rows due to baostock's 5-day history limit)")
+
+    st.divider()
+    st.subheader(f"Signal history — {target}")
+    try:
+        rows = requests.get(f"{API_BASE}/signals/{target}", params={"days": lookback}, timeout=10).json()
+    except Exception as e:
+        st.error(f"failed: {e}")
+        rows = []
+    if rows:
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info(f"no signal rows for {target}")
+
+# ===================== Main: Paper Trades =====================
+elif view == "Paper Trades":
+    st.subheader("Paper Trades — simulated positions")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Open positions**")
+        try:
+            positions = requests.get(f"{API_BASE}/paper_trade/positions", timeout=10).json()
+        except Exception as e:
+            st.error(f"failed: {e}")
+            positions = []
+        if positions:
+            st.dataframe(pd.DataFrame(positions), use_container_width=True)
+        else:
+            st.info("no open positions")
+
+    with col2:
+        st.markdown("**Summary**")
+        try:
+            summary = requests.get(f"{API_BASE}/paper_trade/summary", timeout=10).json()
+        except Exception as e:
+            st.error(f"failed: {e}")
+            summary = {}
+        if summary:
+            st.metric("Realized PnL", f"{summary.get('realized_pnl', 0):.2f}")
+            wr = summary.get("win_rate")
+            st.metric("Win rate", f"{wr:.1%}" if wr is not None else "—")
+            st.metric("Total trades", summary.get("total_trades", 0))
+            st.metric("Open exposure", f"{summary.get('open_exposure', 0):.2f}")
+
+    st.divider()
+    st.markdown("**Buy (open a position)**")
+    with st.form("buy_form"):
+        b_col1, b_col2, b_col3 = st.columns(3)
+        b_sym = b_col1.text_input("symbol", value=target)
+        b_price = b_col2.number_input("price", min_value=0.0, value=10.0, step=0.1)
+        b_qty = b_col3.number_input("qty", min_value=1, value=100, step=100)
+        submitted = st.form_submit_button("Buy")
+        if submitted:
+            try:
+                r = requests.post(
+                    f"{API_BASE}/paper_trade/buy",
+                    json={"symbol": b_sym, "price": b_price, "qty": int(b_qty)},
+                    timeout=10,
+                )
+                if r.ok:
+                    st.success(f"bought {b_qty} {b_sym} @ {b_price}")
+                    st.rerun()
+                else:
+                    st.error(f"failed: {r.json().get('detail', r.text)}")
+            except Exception as e:
+                st.error(f"failed: {e}")
+
+    st.markdown("**Sell (close a position)**")
+    with st.form("sell_form"):
+        s_col1, s_col2, s_col3 = st.columns(3)
+        s_sym = s_col1.text_input("symbol ", value=target)
+        s_price = s_col2.number_input("sell price", min_value=0.0, value=10.0, step=0.1)
+        s_qty = s_col3.number_input("sell qty", min_value=1, value=100, step=100)
+        submitted = st.form_submit_button("Sell")
+        if submitted:
+            try:
+                r = requests.post(
+                    f"{API_BASE}/paper_trade/sell",
+                    json={"symbol": s_sym, "price": s_price, "qty": int(s_qty)},
+                    timeout=10,
+                )
+                if r.ok:
+                    body = r.json()
+                    st.success(f"sold {body['qty']} {s_sym} @ {s_price} — pnl {body['pnl']:.2f}")
+                    st.rerun()
+                else:
+                    st.error(f"failed: {r.json().get('detail', r.text)}")
+            except Exception as e:
+                st.error(f"failed: {e}")
+
+    st.divider()
+    st.markdown("**History (closed)**")
+    try:
+        hist = requests.get(f"{API_BASE}/paper_trade/history", params={"limit": 50}, timeout=10).json()
+    except Exception as e:
+        st.error(f"failed: {e}")
+        hist = []
+    if hist:
+        st.dataframe(pd.DataFrame(hist), use_container_width=True)
+    else:
+        st.info("no closed trades yet")
