@@ -19,6 +19,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from .db import acquire, upsert_ohlcv
 from .sources import fetch_with_failover, SourceUnavailable
+from . import factor_runner
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
@@ -119,7 +120,9 @@ async def collect_fund_one(fund_code: str, lookback_days: int = 3):
 
 
 async def upsert_fund_nav(rows: list[dict]) -> int:
-    """Fund-specific upsert (kept here so this module is self-contained)."""
+    """Fund-specific upsert (kept here so this module is self-contained).
+    nav_date may be str or python date; coerced for asyncpg."""
+    from .db import _coerce_date
     if not rows:
         return 0
     sql = """
@@ -129,12 +132,14 @@ async def upsert_fund_nav(rows: list[dict]) -> int:
         nav=EXCLUDED.nav, accum_nav=EXCLUDED.accum_nav,
         daily_growth=EXCLUDED.daily_growth, source=EXCLUDED.source
     """
+    coerced = [
+        (r["fund_code"], _coerce_date(r["nav_date"]),
+         r.get("nav"), r.get("accum_nav"), r.get("daily_growth"), r["source"])
+        for r in rows
+    ]
     async with acquire() as conn:
         async with conn.transaction():
-            await conn.executemany(sql, [
-                (r["fund_code"], r["nav_date"], r.get("nav"), r.get("accum_nav"),
-                 r.get("daily_growth"), r["source"]) for r in rows
-            ])
+            await conn.executemany(sql, coerced)
     return len(rows)
 
 
@@ -188,6 +193,12 @@ async def main_async():
     sched.add_job(run_astock_job, CronTrigger.from_crontab(os.getenv("COLLECT_CRON_ASTOCK", "0 17 * * 1-5")))
     # 基金: 每天 22:00
     sched.add_job(run_fund_job, CronTrigger.from_crontab(os.getenv("COLLECT_CRON_FUND", "0 22 * * *")))
+    # 因子: 工作日 17:30 (after OHLCV is in)
+    sched.add_job(
+        lambda: factor_runner.run_all_symbols(lookback_days=int(os.getenv("FACTOR_LOOKBACK_DAYS", "252"))),
+        CronTrigger.from_crontab(os.getenv("FACTOR_CRON", "30 17 * * 1-5")),
+        id="factor_runner",
+    )
 
     # Run once on startup to populate initial data
     sched.add_job(run_astock_job, "date", id="astock_startup")

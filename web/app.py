@@ -1,4 +1,4 @@
-"""Streamlit entrypoint — K-line chart + symbol browser."""
+"""Streamlit entrypoint — K-line chart + symbol browser + features panel."""
 from __future__ import annotations
 import os
 import streamlit as st
@@ -27,39 +27,95 @@ with st.sidebar:
     else:
         target = st.text_input("fund code", "000001")
     lookback = st.slider("lookback days", 30, 1000, 250)
+    view = st.radio("view", ["K-line / 净值", "Factors"])
 
-# Main: fetch + plot
-if kind == "astock":
-    st.subheader(f"A股 K线 — {target}")
-    try:
-        rows = requests.get(f"{API_BASE}/ohlcv/{target}", params={"limit": lookback}, timeout=10).json()
-    except Exception as e:
-        st.error(f"failed to load OHLCV: {e}")
-        rows = []
-    if rows:
-        df = pd.DataFrame(rows).sort_values("trade_date")
-        fig = go.Figure(data=[go.Candlestick(
-            x=df["trade_date"],
-            open=df["open"], high=df["high"], low=df["low"], close=df["close"],
-            increasing_line_color="red", decreasing_line_color="green",
-        )])
-        fig.update_layout(xaxis_rangeslider_visible=False, height=500)
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(df[["trade_date", "open", "high", "low", "close", "volume"]], use_container_width=True)
+# ===================== Main: K-line / NAV =====================
+if view == "K-line / 净值":
+    if kind == "astock":
+        st.subheader(f"A股 K线 — {target}")
+        try:
+            rows = requests.get(f"{API_BASE}/ohlcv/{target}", params={"limit": lookback}, timeout=10).json()
+        except Exception as e:
+            st.error(f"failed to load OHLCV: {e}")
+            rows = []
+        if rows:
+            df = pd.DataFrame(rows).sort_values("trade_date")
+            fig = go.Figure(data=[go.Candlestick(
+                x=df["trade_date"],
+                open=df["open"], high=df["high"], low=df["low"], close=df["close"],
+                increasing_line_color="red", decreasing_line_color="green",
+            )])
+            fig.update_layout(xaxis_rangeslider_visible=False, height=500)
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(df[["trade_date", "open", "high", "low", "close", "volume"]], use_container_width=True)
+        else:
+            st.info("no data — run `python -m bin.backfill_ohlcv` or hit POST /collect/astock")
     else:
-        st.info("no data — run `python -m collector.seed` and let APScheduler run, or hit POST /collect/astock")
+        st.subheader(f"基金净值 — {target}")
+        try:
+            rows = requests.get(f"{API_BASE}/fund/{target}", params={"limit": lookback}, timeout=10).json()
+        except Exception as e:
+            st.error(f"failed to load NAV: {e}")
+            rows = []
+        if rows:
+            df = pd.DataFrame(rows).sort_values("nav_date")
+            fig = go.Figure(data=[go.Scatter(x=df["nav_date"], y=df["nav"], mode="lines+markers")])
+            fig.update_layout(height=400, yaxis_title="单位净值")
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("no data — seed fund codes via SQL then hit POST /collect/fund")
+
+# ===================== Main: Features =====================
 else:
-    st.subheader(f"基金净值 — {target}")
+    st.subheader(f"Factors — {target}")
     try:
-        rows = requests.get(f"{API_BASE}/fund/{target}", params={"limit": lookback}, timeout=10).json()
+        meta = requests.get(f"{API_BASE}/features/list", timeout=5).json()
     except Exception as e:
-        st.error(f"failed to load NAV: {e}")
-        rows = []
-    if rows:
-        df = pd.DataFrame(rows).sort_values("nav_date")
-        fig = go.Figure(data=[go.Scatter(x=df["nav_date"], y=df["nav"], mode="lines+markers")])
-        fig.update_layout(height=400, yaxis_title="单位净值")
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(df, use_container_width=True)
+        st.error(f"failed to load feature list: {e}")
+        meta = []
+    if not meta:
+        st.info("no factors registered")
     else:
-        st.info("no data — seed fund codes via SQL then hit POST /collect/fund")
+        feature_names = [m["name"] for m in meta]
+        feature = st.selectbox("feature", feature_names)
+        try:
+            rows = requests.get(
+                f"{API_BASE}/features/{target}/{feature}",
+                params={"days": lookback},
+                timeout=10,
+            ).json()
+        except Exception as e:
+            st.error(f"failed to load feature: {e}")
+            rows = []
+        if rows:
+            df = pd.DataFrame(rows).sort_values("calc_date")
+            df["value"] = pd.to_numeric(df["value"], errors="coerce")
+            fig = go.Figure(data=[go.Scatter(
+                x=df["calc_date"], y=df["value"], mode="lines+markers",
+                name=feature,
+            )])
+            fig.update_layout(height=400, yaxis_title=feature, xaxis_title="calc_date")
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info(
+                f"no feature rows for {target}/{feature} — "
+                f"run factor_runner (need ≥14-20 days of OHLCV for most factors)"
+            )
+
+        # Cross-section table (latest values for all symbols, this feature)
+        with st.expander(f"Cross-section: latest {feature} across all symbols"):
+            try:
+                latest = requests.get(f"{API_BASE}/features/latest", timeout=10).json()
+            except Exception as e:
+                st.error(f"failed: {e}")
+                latest = []
+            if latest:
+                df = pd.DataFrame(latest)
+                df_wide = df.pivot_table(
+                    index="symbol", columns="feature", values="value", aggfunc="first"
+                ).reset_index()
+                st.dataframe(df_wide, use_container_width=True)
+            else:
+                st.info("no cross-section data yet")

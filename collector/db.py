@@ -1,8 +1,26 @@
 """PostgreSQL/asyncpg helpers shared by all collectors and API."""
 from __future__ import annotations
 import os
+from datetime import date, datetime
 import asyncpg
 from contextlib import asynccontextmanager
+
+
+def _coerce_date(v) -> date:
+    """Coerce various date representations to a python `date`.
+    Accepts: date, datetime, str in 'YYYYMMDD' or 'YYYY-MM-DD' format.
+    Raises TypeError on anything else so we fail loud rather than write garbage."""
+    if isinstance(v, date) and not isinstance(v, datetime):
+        return v
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, str):
+        for fmt in ("%Y%m%d", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(v, fmt).date()
+            except ValueError:
+                continue
+    raise TypeError(f"cannot coerce {type(v).__name__} {v!r} to date")
 
 
 def db_dsn() -> str:
@@ -33,7 +51,8 @@ async def acquire():
 
 
 async def upsert_ohlcv(rows: list[dict]) -> int:
-    """rows: [{'symbol','trade_date','open','high','low','close','volume','amount','source'}, ...]"""
+    """rows: [{'symbol','trade_date','open','high','low','close','volume','amount','source'}, ...]
+    trade_date may be str 'YYYYMMDD' or python date; coerced to date for asyncpg."""
     if not rows:
         return 0
     sql = """
@@ -44,11 +63,13 @@ async def upsert_ohlcv(rows: list[dict]) -> int:
         close=EXCLUDED.close, volume=EXCLUDED.volume, amount=EXCLUDED.amount,
         source=EXCLUDED.source
     """
+    coerced = [
+        (r["symbol"], _coerce_date(r["trade_date"]),
+         r.get("open"), r.get("high"), r.get("low"),
+         r.get("close"), r.get("volume"), r.get("amount"), r["source"])
+        for r in rows
+    ]
     async with acquire() as conn:
         async with conn.transaction():
-            await conn.executemany(sql, [
-                (r["symbol"], r["trade_date"], r.get("open"), r.get("high"), r.get("low"),
-                 r.get("close"), r.get("volume"), r.get("amount"), r["source"])
-                for r in rows
-            ])
+            await conn.executemany(sql, coerced)
     return len(rows)

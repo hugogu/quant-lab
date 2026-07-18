@@ -1,11 +1,27 @@
-"""POST /collect — manually trigger a collector run (mostly for debugging)."""
+"""POST /collect — manually trigger a collector run (mostly for debugging).
+
+Phase 2.0: uses the failover-aware registry (fetch_with_failover) instead of
+the legacy collector.astock / collector.fund modules (deleted in commit 60ce2ba).
+Each per-symbol call returns the source that served the data and how many
+rows landed.
+"""
 from __future__ import annotations
-import asyncio
-from fastapi import APIRouter
-from collector import astock, fund
 from datetime import date, timedelta
+from fastapi import APIRouter
+
+from collector.sources import fetch_with_failover, SourceUnavailable
+from collector.db import acquire, upsert_ohlcv
 
 router = APIRouter()
+
+
+async def _list_symbols(market: str) -> list[str]:
+    async with acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT symbol FROM symbol WHERE market=$1 AND status='active' ORDER BY symbol",
+            market,
+        )
+    return [r["symbol"] for r in rows]
 
 
 @router.post("/collect/astock")
@@ -26,9 +42,27 @@ async def collect_astock(payload: dict | list | None = None, lookback_days: int 
     else:
         symbols = None
     if not symbols:
-        symbols = await astock.list_active_symbols()
-    result = await astock.collect_symbols(symbols, lookback_days=lookback_days)
-    return {"symbols_processed": len(result), "rows_per_symbol": result}
+        symbols = await _list_symbols("astock")
+
+    end = date.today()
+    start = end - timedelta(days=lookback_days)
+    out: list[dict] = []
+    for sym in symbols:
+        try:
+            r = await fetch_with_failover(
+                domain="astock", symbol=sym, start=start, end=end, persist_raw=True,
+            )
+            if r.rows:
+                await upsert_ohlcv(r.rows)
+            out.append({
+                "symbol": sym,
+                "source": r.source,
+                "rows": len(r.rows),
+                "raw_id": r.raw_id,
+            })
+        except SourceUnavailable as e:
+            out.append({"symbol": sym, "error": str(e)})
+    return {"symbols_processed": len(out), "results": out}
 
 
 @router.post("/collect/fund")
@@ -43,17 +77,28 @@ async def collect_fund(payload: dict | list | None = None, lookback_days: int = 
     else:
         funds = None
     if not funds:
-        from ..db import acquire
-        async with acquire() as conn:
-            rows = await conn.fetch("SELECT symbol FROM symbol WHERE market='fund' AND status='active'")
-        funds = [r["symbol"] for r in rows]
+        funds = await _list_symbols("fund")
+
     end = date.today()
     start = end - timedelta(days=lookback_days)
-    rows_in, total = 0, 0
+    out: list[dict] = []
+    # Reuse the fund-specific upsert (it lives in scheduler to keep this module
+    # independent of fund-specific row shape knowledge).
+    from collector.scheduler import upsert_fund_nav
+
     for f in funds:
-        rows = await fund.fetch_fund_nav(f, start, end)
-        if rows:
-            await fund.upsert_fund_nav(rows)
-        rows_in += 1
-        total += len(rows)
-    return {"funds_processed": rows_in, "rows_total": total}
+        try:
+            r = await fetch_with_failover(
+                domain="fund", symbol=f, start=start, end=end, persist_raw=True,
+            )
+            if r.rows:
+                await upsert_fund_nav(r.rows)
+            out.append({
+                "symbol": f,
+                "source": r.source,
+                "rows": len(r.rows),
+                "raw_id": r.raw_id,
+            })
+        except SourceUnavailable as e:
+            out.append({"symbol": f, "error": str(e)})
+    return {"funds_processed": len(out), "results": out}

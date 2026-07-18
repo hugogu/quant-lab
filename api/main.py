@@ -3,14 +3,16 @@ from __future__ import annotations
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routes import healthz, symbols, ohlcv, collect
+from .routes import healthz, symbols, ohlcv, collect, features
+# Importing factors.builtin registers all factors with the registry at boot.
+import factors  # noqa: F401
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
 
 app = FastAPI(
     title="quant-lab API",
-    version="0.1.0",
-    description="Self-hosted stock + fund quantitative analysis platform. Phase 1.",
+    version="0.2.0",
+    description="Self-hosted stock + fund quantitative analysis platform. Phase 2.",
 )
 
 app.add_middleware(
@@ -25,8 +27,18 @@ app.include_router(healthz.router)
 app.include_router(symbols.router)
 app.include_router(ohlcv.router)
 app.include_router(collect.router)
+app.include_router(features.router)
 
 
 @app.get("/")
 async def root():
-    return {"service": "quant-lab", "phase": 1, "endpoints": ["/healthz", "/symbols", "/ohlcv/{symbol}", "/fund/{code}", "/collect/astock", "/collect/fund"]}
+    return {
+        "service": "quant-lab",
+        "phase": 2,
+        "endpoints": [
+            "/healthz", "/symbols",
+            "/ohlcv/{symbol}", "/fund/{code}",
+            "/collect/astock", "/collect/fund",
+            "/features/list", "/features/latest", "/features/{symbol}", "/features/{symbol}/{feature_name}",
+        ],
+    }
