@@ -32,6 +32,24 @@ app.include_router(paper_trade.router)
 app.include_router(signals.router)
 
 
+# ============================================================
+# MCP server — expose the same API to agents (Kimi's design).
+# Auto-generates MCP tools from every FastAPI route.
+# Mounted at /mcp via streamable HTTP transport.
+# ============================================================
+try:
+    from fastapi_mcp import FastApiMCP
+    mcp_server = FastApiMCP(
+        app,
+        name="quant-lab",
+        description="Self-hosted quantitative platform: collect, analyze, manage positions.",
+    )
+    mcp_server.mount_http()  # default path: /mcp
+    logging.getLogger(__name__).info("MCP server mounted at /mcp (streamable HTTP)")
+except ImportError:
+    logging.getLogger(__name__).warning("fastapi-mcp not installed; MCP endpoint unavailable")
+
+
 @app.get("/")
 async def root():
     return {
@@ -45,5 +63,7 @@ async def root():
             "/paper_trade/positions", "/paper_trade/history", "/paper_trade/summary",
             "/paper_trade/buy", "/paper_trade/sell",
             "/signals/latest", "/signals/{symbol}",
+            "/mcp",   # MCP endpoint (streamable HTTP)
         ],
+        "mcp_transport": "streamable-http at /mcp",
     }
